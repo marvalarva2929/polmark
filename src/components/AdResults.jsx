@@ -1,13 +1,29 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import CampaignCard from './CampaignCard';
+import { saveCampaignSubmission } from '../lib/campaigns';
+import { enhanceCampaignCopy } from '../lib/enhanceCopy';
 
-const SUBMIT_URL = import.meta.env.VITE_SUBMIT_URL;
-
-export default function AdResults({ results, onRestart }) {
+export default function AdResults({ results, answers, onRestart, onGoToDashboard }) {
   const [campaigns, setCampaigns] = useState(results.campaigns);
+  const [enhancing, setEnhancing] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    enhanceCampaignCopy({ answers, campaigns: results.campaigns })
+      .then((enhanced) => {
+        if (!cancelled) setCampaigns(enhanced);
+      })
+      .catch((err) => {
+        console.warn('[PolMark] AI enhancement failed, using template copy:', err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setEnhancing(false);
+      });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function updateCampaign(index, updated) {
     setCampaigns((prev) => prev.map((c, i) => (i === index ? updated : c)));
@@ -17,35 +33,26 @@ export default function AdResults({ results, onRestart }) {
     setSubmitting(true);
     setError(null);
 
-    const payload = {
-      ...results,
-      campaigns,
-      submittedAt: new Date().toISOString(),
-    };
-
-    if (SUBMIT_URL) {
-      try {
-        const res = await fetch(SUBMIT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      } catch {
-        setError('Submission failed. Please try again or contact support.');
-        setSubmitting(false);
-        return;
-      }
-    } else {
-      console.log('[PolMark] Campaign submission payload:', JSON.stringify(payload, null, 2));
+    try {
+      await saveCampaignSubmission({ results, campaigns });
+      setSubmitted(true);
+    } catch (err) {
+      console.error('[PolMark] Submission error:', err);
+      setError(err.message ?? 'Submission failed. Please try again.');
+    } finally {
+      setSubmitting(false);
     }
-
-    setSubmitted(true);
-    setSubmitting(false);
   }
 
   if (submitted) {
-    return <SubmitSuccess results={results} campaigns={campaigns} onRestart={onRestart} />;
+    return (
+      <SubmitSuccess
+        results={results}
+        campaigns={campaigns}
+        onGoToDashboard={onGoToDashboard}
+        onRestart={onRestart}
+      />
+    );
   }
 
   return (
@@ -66,19 +73,29 @@ export default function AdResults({ results, onRestart }) {
       </div>
 
       <p className="results-intro">
-        Each campaign targets a specific voter group with its own daily budget. Click <strong>Edit</strong> to customize ad copy, or <strong>View Full Campaign Settings</strong> for the Google Ads configuration. When ready, click <strong>Confirm & Submit</strong>.
+        Each campaign targets a specific voter group with its own daily budget. Click{' '}
+        <strong>Edit</strong> to customize ad copy, or{' '}
+        <strong>View Full Campaign Settings</strong> to see the Google Ads configuration.
+        When ready, click <strong>Confirm & Submit</strong>.
       </p>
 
-      <div className="campaigns-grid">
-        {campaigns.map((campaign, i) => (
-          <CampaignCard
-            key={campaign.id}
-            campaign={campaign}
-            index={i}
-            onChange={(updated) => updateCampaign(i, updated)}
-          />
-        ))}
-      </div>
+      {enhancing ? (
+        <div className="enhancing-state">
+          <div className="enhancing-spinner" />
+          <p className="enhancing-text">Writing AI-optimized copy for each voter group…</p>
+        </div>
+      ) : (
+        <div className="campaigns-grid">
+          {campaigns.map((campaign, i) => (
+            <CampaignCard
+              key={campaign.id}
+              campaign={campaign}
+              index={i}
+              onChange={(updated) => updateCampaign(i, updated)}
+            />
+          ))}
+        </div>
+      )}
 
       {error && <p className="submit-error">{error}</p>}
 
@@ -87,16 +104,16 @@ export default function AdResults({ results, onRestart }) {
         <button
           className="btn btn--primary"
           onClick={handleSubmit}
-          disabled={submitting}
+          disabled={submitting || enhancing}
         >
-          {submitting ? 'Submitting...' : `Confirm & Submit ${campaigns.length} Campaigns →`}
+          {submitting ? 'Submitting…' : `Confirm & Submit ${campaigns.length} Campaigns →`}
         </button>
       </div>
     </div>
   );
 }
 
-function SubmitSuccess({ results, campaigns, onRestart }) {
+function SubmitSuccess({ results, campaigns, onGoToDashboard, onRestart }) {
   return (
     <div className="submit-success">
       <div className="success-icon">✅</div>
@@ -106,7 +123,7 @@ function SubmitSuccess({ results, campaigns, onRestart }) {
         <strong>{results.candidateName || 'your campaign'}</strong> have been sent to the PolMark team.
       </p>
       <p className="success-sub">
-        Our team will review and add your campaigns to your Google Ads account within 1–2 business days.
+        Our team will review and add your campaigns to your Google Ads account within 1–2 business days. You can track the status on your dashboard.
       </p>
       <div className="success-summary">
         <p className="success-summary-label">Submitted campaigns</p>
@@ -120,9 +137,10 @@ function SubmitSuccess({ results, campaigns, onRestart }) {
           </div>
         ))}
       </div>
-      <button className="btn btn--primary" onClick={onRestart} style={{ marginTop: '28px' }}>
-        Create New Campaigns
-      </button>
+      <div className="success-actions">
+        <button className="btn btn--outline" onClick={onRestart}>New Campaign</button>
+        <button className="btn btn--primary" onClick={onGoToDashboard}>View My Dashboard →</button>
+      </div>
     </div>
   );
 }
